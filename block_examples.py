@@ -2,11 +2,13 @@ from contextlib import closing
 import json
 import math
 
+from analysis_tasks.blocks import sign_blocks
 from analysis_tasks.requests import WindowRequest
 from analysis_tasks.service import analyze, freeze
 from archive import connect
 from duration_inference.evidence import ZeroEvidenceError
 from examples import observation_batch, single_state, two_state
+from observations.blocks import issue_block
 from observations.sequences import revise_observations
 from runtime_models.registry import register_model
 from runtime_models.schema import ModelDefinition
@@ -89,5 +91,96 @@ def baseline_comparison():
     }
 
 
+def _close(actual, expected, tolerance=1e-8):
+    if isinstance(expected, (list, tuple)):
+        return (isinstance(actual, (list, tuple)) and len(actual) == len(expected)
+                and all(_close(a, e, tolerance) for a, e in zip(actual, expected)))
+    if expected is None or actual is None:
+        return expected is None and actual is None
+    return math.isclose(actual, expected, rel_tol=0.0, abs_tol=tolerance)
+
+
+def _assert_joint_matches(report, joined):
+    assert report["states"] == joined["states"]
+    assert report["dimensions"] == joined["dimensions"]
+    assert _close(report["mean"], joined["mean"]), "joint mean mismatch"
+    assert _close(report["covariance"], joined["covariance"]), \
+        "joint covariance mismatch"
+    assert report["evidence"]["exponent"] == joined["evidence"]["exponent"]
+    assert _close(report["evidence"]["probability"],
+                  joined["evidence"]["probability"])
+    assert _close(report["evidence"]["log_evidence"],
+                  joined["evidence"]["log_evidence"])
+
+
+def _issue_pair(definition, left, right, revision_id="line-model"):
+    split = len(left)
+    with closing(connect()) as day, closing(connect()) as night:
+        day_ref, day_version = load_station(
+            day, "day-line", definition, left, revision_id)
+        night_ref, night_version = load_station(
+            night, "night-line", definition, right, revision_id)
+        left_block = issue_block(day, "run-sample", 0, day_ref, day_version, split)
+        right_block = issue_block(night, "run-sample", split, night_ref,
+                                  night_version, len(right))
+    carried = (json.loads(json.dumps(left_block)), json.loads(json.dumps(right_block)))
+    assert carried == (left_block, right_block)
+    return carried
+
+
+def _sign(definition, left_block, right_block, report_id="joint-sample"):
+    with closing(connect()) as center:
+        register_model(center, "line-model", definition)
+        return sign_blocks(center, report_id, left_block, right_block)
+
+
+def block_verification():
+    cases = sample_cases()
+    summary = {}
+
+    model, left, right = cases["renewal"]
+    report = _sign(model, *_issue_pair(model, left, right))
+    _assert_joint_matches(report, continuous_v1(model, left, right))
+    assert report["evidence"]["probability"] == 1
+    assert report["mean"] == [2, 0.5, 1, 0.5]
+    assert report["covariance"][1][3] == report["covariance"][3][1] == -0.25
+    summary["renewal"] = {"mean": report["mean"],
+                          "cross_covariance": report["covariance"][1][3]}
+
+    model, left, right = cases["supported"]
+    report = _sign(model, *_issue_pair(model, left, right))
+    _assert_joint_matches(report, continuous_v1(model, left, right))
+    assert report["evidence"]["probability"] == 0.5
+    assert report["mean"][-1] == 1
+    summary["supported"] = {"evidence": report["evidence"]["probability"],
+                            "later_renewals": report["mean"][-1]}
+
+    model, left, right = cases["unsupported"]
+    left_block, right_block = _issue_pair(model, left, right)
+    try:
+        _sign(model, left_block, right_block)
+    except ZeroEvidenceError:
+        summary["unsupported"] = "rejected"
+    else:
+        raise AssertionError("the opposite seam unexpectedly has positive evidence")
+
+    model, left, right = cases["tiny"]
+    report = _sign(model, *_issue_pair(model, left, right))
+    evidence = report["evidence"]
+    assert evidence["probability"] is None
+    assert evidence["probability_representable"] is False
+    assert evidence["exponent"] == -400
+    assert math.isclose(evidence["log_evidence"], -400 * math.log(10),
+                        abs_tol=1e-8)
+    summary["tiny"] = evidence
+
+    model, left, right = cases["noisy"]
+    report = _sign(model, *_issue_pair(model, left, right))
+    _assert_joint_matches(report, continuous_v1(model, left, right))
+    summary["noisy"] = {"mean": report["mean"]}
+    return summary
+
+
 if __name__ == "__main__":
-    print(json.dumps(baseline_comparison(), sort_keys=True, indent=2))
+    print(json.dumps({"baseline": baseline_comparison(),
+                      "blocks": block_verification()}, sort_keys=True, indent=2))

@@ -47,6 +47,28 @@ def validate_joint_statistics(mean, covariance):
             if abs(covariance[i][j] - covariance[j][i]) > 1e-8:
                 raise ReportValidationError("asymmetric covariance")
 
+def validate_shift_conservation(states, lengths, mean, covariance):
+    k = len(states)
+    dims = k + 1
+    if len(lengths) != 2 or len(mean) != 2 * dims:
+        raise ReportValidationError("shift layout mismatch")
+    total = sum(lengths)
+    for shift, length in enumerate(lengths):
+        offset = shift * dims
+        left_edge = 0 if shift == 0 else lengths[0]
+        right_edge = left_edge + length
+        if abs(math.fsum(mean[offset:offset+k]) - length) > 1e-8:
+            raise ReportValidationError("occupancy mean conservation")
+        for state in range(k):
+            if not -1e-8 <= mean[offset+state] <= length + 1e-8:
+                raise ReportValidationError("occupancy outside bounds")
+        for j in range(len(mean)):
+            if abs(math.fsum(covariance[offset+s][j] for s in range(k))) > 1e-8:
+                raise ReportValidationError("occupancy covariance conservation")
+        maximum = max(0, min(right_edge, total) - max(1, left_edge))
+        if not -1e-8 <= mean[offset+k] <= maximum + 1e-8:
+            raise ReportValidationError("renewal mean outside bounds")
+
 def validate_occupancy_conservation(binding, mean, covariance):
     k = len(binding.states)
     for number, window in enumerate(binding.windows):

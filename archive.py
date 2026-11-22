@@ -23,6 +23,7 @@ def connect(path=":memory:"):
     from runtime_models.storage import ModelStore
     from observations.storage import ObservationStore
     from analysis_tasks.storage import TaskStore
+    from analysis_tasks.blocks import initialize_block_archive
     from run_reports.publication import initialize_report_archive
     try:
         with atomic(connection):
@@ -30,6 +31,7 @@ def connect(path=":memory:"):
             ObservationStore(connection).initialize()
             TaskStore(connection).initialize()
             initialize_report_archive(connection)
+            initialize_block_archive(connection)
         return connection
     except BaseException:
         connection.close()

@@ -76,6 +76,10 @@ mean与covariance使用相同维度顺序，后者为完整联合协方差，包
 
 模型登记失败不覆盖旧模型；观测批次失败不改变任何记录或版本；冻结失败回滚新快照。计算失败不创建报告。发布用同一事务提交报告、回执及任务已发布状态，失败整体回滚，任务继续保持冻结可重试。read_report在一致读事务中读取归档值，不运行推断；修改返回字典不能回写。已发布任务再次analyze返回同一成果和回执。
 
+## 双班段离线合算（V2）
+
+在 V1 接口之上，observations.blocks.issue_block(source, run_id, start, model_ref, sequence_revision, prefix) 让各站凭指定冻结前缀独立发行可携带的班段件（可经标准 JSON 序列化的字典），件头绑定运行号、起拍、拍数、确切模型引用与观测出处，件内只含班段级分析证据，逐拍观测及逐拍似然留在站库。关站后，analysis_tasks.blocks.sign_blocks(center, report_id, left, right, before_commit=None) 在中心核对同运行、同模型修订且顺序相邻的两件并合算，定稿与回执同事务入档；analysis_tasks.blocks.read_blocks(center, report_id) 按原申请号读取定稿。左班按平衡分布截取，右班首拍由左班末拍推进一次，更新按到达拍归班，同状态换段照计。口径、异常与归档语义详见 SHIFT_BLOCKS.md；tests/test_shift_blocks.py 为班段联合回归，verify.py 串联原回归与班段联合核验。
+
 ## 模块与回归
 
 runtime_models负责模型结构、概率、平稳分布、持久化及登记；observations负责记录、整批更正、版本、快照及存储；analysis_tasks负责请求、绑定、目录、存储及编排；duration_inference负责初始残寿命、相位边、证据及联合矩；run_reports负责窗口奖励、报告核账、发布和读取。archive.py提供连接和可嵌套事务边界。
